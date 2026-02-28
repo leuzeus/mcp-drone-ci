@@ -57,5 +57,14 @@ Optional:
 - Use a read-only Drone token by default.
 - Keep write actions disabled (`MCP_ENABLE_WRITE_ACTIONS=false`) until authorization guardrails are in place.
 
+## Repository Protection
+This repository is configured to enforce:
+- branch protection on `main` (PR required, 1 approval, stale review dismissal),
+- required status check (`CI / test`),
+- linear history and no force-push,
+- signed commits on protected branch,
+- secret scanning and push protection,
+- Dependabot security updates.
+
 ## Publishing
 You can keep this repository public safely if you follow the security notes above.
