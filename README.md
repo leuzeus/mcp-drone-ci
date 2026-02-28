@@ -59,8 +59,8 @@ Optional:
 
 ## Repository Protection
 This repository is configured to enforce:
-- branch protection on `main` (PR required, 1 approval, stale review dismissal),
-- required status check (`CI / test`),
+- branch protection on `main` (PR required, stale review dismissal),
+- required status check (`test`),
 - linear history and no force-push,
 - signed commits on protected branch,
 - secret scanning and push protection,
