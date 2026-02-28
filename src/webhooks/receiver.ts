@@ -1,4 +1,5 @@
 import { DroneBuildStatus } from "../types/drone";
+import { createHmac, timingSafeEqual } from "crypto";
 
 export type DroneWebhookEventType = "build" | "repo" | "unknown";
 
@@ -41,8 +42,23 @@ export class WebhookReceiver {
       return false;
     }
 
-    // Placeholder: replace with HMAC verification once HTTP integration is in place.
-    return rawBody.length >= 0 && signature.length > 0;
+    const provided = this.normalizeSignature(signature);
+    if (!provided) {
+      return false;
+    }
+
+    const expected = createHmac("sha256", this.secret)
+      .update(rawBody, "utf8")
+      .digest("hex");
+
+    const expectedBuffer = Buffer.from(expected, "hex");
+    const providedBuffer = Buffer.from(provided, "hex");
+
+    if (expectedBuffer.length !== providedBuffer.length) {
+      return false;
+    }
+
+    return timingSafeEqual(expectedBuffer, providedBuffer);
   }
 
   parseEvent(
@@ -64,5 +80,14 @@ export class WebhookReceiver {
       buildNumber: payload.build?.number,
       status: payload.build?.status,
     };
+  }
+
+  private normalizeSignature(raw: string): string | null {
+    const value = raw.trim().toLowerCase();
+    const candidate = value.startsWith("sha256=")
+      ? value.slice("sha256=".length)
+      : value;
+
+    return /^[a-f0-9]{64}$/.test(candidate) ? candidate : null;
   }
 }

@@ -140,3 +140,9 @@ Week 3:
 2. On failure, an agent can provide a log-based diagnosis and propose an action.
 3. The system supports webhook-first with polling fallback without API overload.
 4. Write actions remain disabled until security validation is complete.
+
+## 9. Public Repository Readiness
+1. Secrets are provided only via environment variables (`DRONE_TOKEN`, `DRONE_WEBHOOK_SECRET`).
+2. `.env` files are ignored and `.env.example` is used as a template.
+3. Webhook signatures are validated with HMAC SHA-256.
+4. Unit tests cover critical behavior (configuration, policy, webhook verification).

@@ -1,11 +1,12 @@
-import { defaultRuntimeConfig } from "./config/runtime-config";
+import { loadRuntimeConfig } from "./config/runtime-config";
 import { DroneClient } from "./drone/client";
 import { DroneMcpServer } from "./mcp/server";
 
 function bootstrap(): void {
-  const droneClient = new DroneClient(defaultRuntimeConfig.drone);
+  const runtimeConfig = loadRuntimeConfig();
+  const droneClient = new DroneClient(runtimeConfig.drone);
   const server = new DroneMcpServer(droneClient, {
-    readWriteActions: false,
+    readWriteActions: runtimeConfig.mcp.readWriteActions,
   });
 
   console.log(
@@ -13,4 +14,10 @@ function bootstrap(): void {
   );
 }
 
-bootstrap();
+try {
+  bootstrap();
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`Unable to start MCP Drone CI: ${message}`);
+  process.exitCode = 1;
+}
