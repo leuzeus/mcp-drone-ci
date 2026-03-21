@@ -9,6 +9,11 @@ export interface BuildStateSnapshot {
   build?: DroneBuild;
 }
 
+export interface BuildStateStoreOptions {
+  maxSnapshots?: number;
+  maxSnapshotsPerRepo?: number;
+}
+
 function buildKey(owner: string, repo: string, buildNumber: number): string {
   return `${owner}/${repo}#${buildNumber}`;
 }
@@ -19,6 +24,13 @@ function isActive(status: DroneBuildStatus): boolean {
 
 export class BuildStateStore {
   private readonly snapshots = new Map<string, BuildStateSnapshot>();
+  private readonly maxSnapshots: number;
+  private readonly maxSnapshotsPerRepo: number;
+
+  constructor(options: BuildStateStoreOptions = {}) {
+    this.maxSnapshots = Math.max(options.maxSnapshots ?? 1_000, 1);
+    this.maxSnapshotsPerRepo = Math.max(options.maxSnapshotsPerRepo ?? 200, 1);
+  }
 
   upsert(snapshot: BuildStateSnapshot): void {
     const key = buildKey(snapshot.owner, snapshot.repo, snapshot.buildNumber);
@@ -37,6 +49,9 @@ export class BuildStateStore {
       ...snapshot,
       build: nextBuild,
     });
+
+    this.pruneRepo(snapshot.owner, snapshot.repo);
+    this.pruneGlobal();
   }
 
   upsertFromBuild(build: DroneBuild, updatedAtUnix = Math.floor(Date.now() / 1000)): void {
@@ -80,5 +95,27 @@ export class BuildStateStore {
 
   listActive(): BuildStateSnapshot[] {
     return this.listAll().filter((snapshot) => isActive(snapshot.status));
+  }
+
+  private pruneRepo(owner: string, repo: string): void {
+    const repoSnapshots = this.listByRepo(owner, repo);
+    if (repoSnapshots.length <= this.maxSnapshotsPerRepo) {
+      return;
+    }
+
+    for (const snapshot of repoSnapshots.slice(this.maxSnapshotsPerRepo)) {
+      this.snapshots.delete(buildKey(snapshot.owner, snapshot.repo, snapshot.buildNumber));
+    }
+  }
+
+  private pruneGlobal(): void {
+    const allSnapshots = this.listAll();
+    if (allSnapshots.length <= this.maxSnapshots) {
+      return;
+    }
+
+    for (const snapshot of allSnapshots.slice(this.maxSnapshots)) {
+      this.snapshots.delete(buildKey(snapshot.owner, snapshot.repo, snapshot.buildNumber));
+    }
   }
 }

@@ -35,6 +35,7 @@ function createClient(fetchImpl: MockFetch): DroneClient {
     token: "test-token",
     timeoutMs: 1_000,
     maxRetries: 1,
+    maxResponseBytes: 2_000_000,
     fetchImpl,
   });
 }
@@ -122,6 +123,27 @@ test("getBuildLogs joins output and truncates when requested", async () => {
   assert.equal(logs.truncated, true);
 });
 
+test("getBuildLogs applies a safe default limit when none is provided", async () => {
+  const { fetchImpl } = createFetchMock(async () =>
+    new Response(
+      JSON.stringify([{ pos: 0, out: "a".repeat(25_000) }]),
+      { status: 200, headers: { "content-type": "application/json" } }
+    )
+  );
+
+  const client = createClient(fetchImpl);
+  const logs = await client.getBuildLogs({
+    owner: "acme",
+    repo: "api",
+    buildNumber: 7,
+    stageNumber: 1,
+    stepNumber: 2,
+  });
+
+  assert.equal(logs.content.length, 20_000);
+  assert.equal(logs.truncated, true);
+});
+
 test("restartBuild falls back to getBuild when API returns empty response", async () => {
   let callIndex = 0;
   const { fetchImpl, calls } = createFetchMock(async () => {
@@ -168,6 +190,33 @@ test("maps 404 response to DroneApiError", async () => {
       assert.ok(error instanceof DroneApiError);
       assert.equal(error.statusCode, 404);
       assert.equal(error.code, "NOT_FOUND");
+      return true;
+    }
+  );
+});
+
+test("rejects oversized Drone responses", async () => {
+  const { fetchImpl } = createFetchMock(async () =>
+    new Response("x".repeat(128), {
+      status: 200,
+      headers: { "content-length": "128", "content-type": "text/plain" },
+    })
+  );
+
+  const client = new DroneClient({
+    baseUrl: "https://drone.example.com",
+    token: "test-token",
+    timeoutMs: 1_000,
+    maxRetries: 0,
+    maxResponseBytes: 64,
+    fetchImpl,
+  });
+
+  await assert.rejects(
+    () => client.getBuild("acme", "api", 1),
+    (error: unknown) => {
+      assert.ok(error instanceof DroneApiError);
+      assert.equal(error.code, "RESPONSE_TOO_LARGE");
       return true;
     }
   );

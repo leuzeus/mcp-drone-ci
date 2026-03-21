@@ -7,6 +7,7 @@ const DEFAULT_MAX_BODY_SIZE_BYTES = 1_000_000;
 
 export interface WebhookHttpServerConfig {
   port: number;
+  host?: string;
   path: string;
   maxBodySizeBytes?: number;
 }
@@ -46,6 +47,34 @@ function writeJson(res: ServerResponse, statusCode: number, body: Record<string,
   res.end(JSON.stringify(body));
 }
 
+class HttpResponseError extends Error {
+  constructor(
+    public readonly statusCode: number,
+    public readonly publicMessage: string
+  ) {
+    super(publicMessage);
+    this.name = "HttpResponseError";
+  }
+}
+
+function matchesWebhookPath(req: IncomingMessage, expectedPath: string): boolean {
+  const requestUrl = new URL(req.url ?? "/", "http://localhost");
+  return requestUrl.pathname === expectedPath;
+}
+
+function ensureJsonContentType(req: IncomingMessage): void {
+  const contentType = req.headers["content-type"];
+  const value = Array.isArray(contentType) ? contentType[0] : contentType;
+  if (!value) {
+    throw new HttpResponseError(415, "Content-Type must be application/json");
+  }
+
+  const normalized = value.split(";")[0]?.trim().toLowerCase();
+  if (normalized !== "application/json") {
+    throw new HttpResponseError(415, "Content-Type must be application/json");
+  }
+}
+
 async function readBody(req: IncomingMessage, maxBodySizeBytes: number): Promise<string> {
   return new Promise((resolve, reject) => {
     let total = 0;
@@ -54,7 +83,7 @@ async function readBody(req: IncomingMessage, maxBodySizeBytes: number): Promise
     req.on("data", (chunk: Buffer) => {
       total += chunk.length;
       if (total > maxBodySizeBytes) {
-        reject(new Error("Webhook payload exceeds maximum body size."));
+        reject(new HttpResponseError(413, "Webhook payload exceeds maximum body size."));
         req.destroy();
         return;
       }
@@ -159,12 +188,13 @@ export async function startDroneWebhookHttpServer({
   const maxBodySizeBytes = config.maxBodySizeBytes ?? DEFAULT_MAX_BODY_SIZE_BYTES;
 
   const server = createServer(async (req, res) => {
-    if (req.method !== "POST" || req.url !== config.path) {
+    if (req.method !== "POST" || !matchesWebhookPath(req, config.path)) {
       writeJson(res, 404, { error: "Not found" });
       return;
     }
 
     try {
+      ensureJsonContentType(req);
       const rawBody = await readBody(req, maxBodySizeBytes);
       const signature = readSignatureHeader(req);
 
@@ -213,14 +243,18 @@ export async function startDroneWebhookHttpServer({
         action: parsed.action,
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      writeJson(res, 500, { error: message });
+      if (error instanceof HttpResponseError) {
+        writeJson(res, error.statusCode, { error: error.publicMessage });
+        return;
+      }
+
+      writeJson(res, 500, { error: "Internal server error" });
     }
   });
 
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(config.port, () => {
+    server.listen(config.port, config.host ?? "127.0.0.1", () => {
       server.off("error", reject);
       resolve();
     });

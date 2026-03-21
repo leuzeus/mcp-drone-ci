@@ -114,3 +114,38 @@ test("webhook HTTP server rejects invalid signatures", async () => {
     });
   }
 });
+
+test("webhook HTTP server rejects non-JSON payloads before parsing", async () => {
+  const secret = "webhook-secret";
+  const store = new BuildStateStore();
+
+  const server = await startDroneWebhookHttpServer({
+    config: {
+      port: 0,
+      path: "/webhook/drone",
+    },
+    receiver: new WebhookReceiver(secret),
+    buildStateStore: store,
+  });
+
+  try {
+    const address = server.address() as AddressInfo;
+    const body = "plain-text";
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/webhook/drone`, {
+      method: "POST",
+      headers: {
+        "content-type": "text/plain",
+        "x-drone-event": "build:updated",
+        "x-drone-signature": sign(secret, body),
+      },
+      body,
+    });
+
+    assert.equal(response.status, 415);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+});

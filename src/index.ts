@@ -9,7 +9,10 @@ import { WebhookReceiver } from "./webhooks/receiver";
 async function bootstrap(): Promise<void> {
   const runtimeConfig = loadRuntimeConfig();
   const droneClient = new DroneClient(runtimeConfig.drone);
-  const buildStateStore = new BuildStateStore();
+  const buildStateStore = new BuildStateStore({
+    maxSnapshots: runtimeConfig.mcp.buildStateMaxSnapshots,
+    maxSnapshotsPerRepo: runtimeConfig.mcp.buildStateMaxSnapshotsPerRepo,
+  });
   const reconciler = new BuildStateReconciler(droneClient, buildStateStore, {
     intervalMs: runtimeConfig.mcp.reconcileIntervalMs,
   });
@@ -23,15 +26,17 @@ async function bootstrap(): Promise<void> {
     const receiver = new WebhookReceiver(runtimeConfig.webhook.secret);
     await startDroneWebhookHttpServer({
       config: {
+        host: runtimeConfig.webhook.host,
         port: runtimeConfig.webhook.port,
         path: runtimeConfig.webhook.path,
+        maxBodySizeBytes: runtimeConfig.webhook.maxBodySizeBytes,
       },
       receiver,
       buildStateStore,
     });
 
     console.error(
-      `Drone webhook receiver listening on http://localhost:${runtimeConfig.webhook.port}${runtimeConfig.webhook.path}`
+      `Drone webhook receiver listening on http://${runtimeConfig.webhook.host}:${runtimeConfig.webhook.port}${runtimeConfig.webhook.path}`
     );
   }
 

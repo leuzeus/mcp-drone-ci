@@ -10,6 +10,9 @@ interface StartMcpServerOptions {
   buildStateStore?: BuildStateStore;
 }
 
+const MAX_LIST_LIMIT = 100;
+const MAX_LOG_CHAR_LIMIT = 100_000;
+
 function toTextResult(payload: unknown): { content: Array<{ type: "text"; text: string }> } {
   return {
     content: [
@@ -147,7 +150,7 @@ export async function startStdioMcpServer(
         "drone_list_repos",
         {
           page: parsePositiveInteger(input.page, "page"),
-          limit: parsePositiveInteger(input.limit, "limit"),
+          limit: parsePositiveInteger(input.limit, "limit", { max: MAX_LIST_LIMIT }),
         },
         String(extra.requestId)
       )
@@ -174,7 +177,7 @@ export async function startStdioMcpServer(
           owner: parseRequiredString(input.owner, "owner"),
           repo: parseRequiredString(input.repo, "repo"),
           page: parsePositiveInteger(input.page, "page"),
-          limit: parsePositiveInteger(input.limit, "limit"),
+          limit: parsePositiveInteger(input.limit, "limit", { max: MAX_LIST_LIMIT }),
           prNumber: parsePositiveInteger(input.prNumber, "prNumber"),
           sourceBranch: parseOptionalString(input.sourceBranch, "sourceBranch"),
           targetBranch: parseOptionalString(input.targetBranch, "targetBranch"),
@@ -235,7 +238,9 @@ export async function startStdioMcpServer(
           stepNumber: parsePositiveInteger(input.stepNumber, "stepNumber", {
             required: true,
           }),
-          limitChars: parsePositiveInteger(input.limitChars, "limitChars"),
+          limitChars: parsePositiveInteger(input.limitChars, "limitChars", {
+            max: MAX_LOG_CHAR_LIMIT,
+          }),
         },
         String(extra.requestId)
       )

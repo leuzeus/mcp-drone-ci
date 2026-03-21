@@ -11,6 +11,7 @@ test("latest resource returns cached build without API call when available", asy
     token: "token",
     timeoutMs: 1000,
     maxRetries: 0,
+    maxResponseBytes: 2_000_000,
     fetchImpl: async () => {
       calls += 1;
       return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
@@ -50,6 +51,7 @@ test("build summary resource falls back to API and updates cache", async () => {
     token: "token",
     timeoutMs: 1000,
     maxRetries: 0,
+    maxResponseBytes: 2_000_000,
     fetchImpl: async () =>
       new Response(
         JSON.stringify({
@@ -102,6 +104,7 @@ test("latest resource prefers highest build number over most recent cache update
     token: "token",
     timeoutMs: 1000,
     maxRetries: 0,
+    maxResponseBytes: 2_000_000,
     fetchImpl: async () => {
       throw new Error("API should not be called");
     },
@@ -147,6 +150,7 @@ test("latest resource keeps cached build details aligned with status-only update
     token: "token",
     timeoutMs: 1000,
     maxRetries: 0,
+    maxResponseBytes: 2_000_000,
     fetchImpl: async () => {
       throw new Error("API should not be called");
     },

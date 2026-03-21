@@ -12,6 +12,7 @@ export interface DroneClientConfig {
   token: string;
   timeoutMs: number;
   maxRetries: number;
+  maxResponseBytes: number;
   fetchImpl?: typeof fetch;
 }
 
@@ -29,6 +30,10 @@ interface RequestOptions {
 
 const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504]);
 const MAX_FILTER_SCAN_PAGES = 20;
+const MAX_LIST_PAGE_SIZE = 100;
+const DEFAULT_LIST_PAGE_SIZE = 25;
+const DEFAULT_LOG_CHAR_LIMIT = 20_000;
+const MAX_LOG_CHAR_LIMIT = 100_000;
 const BUILD_STATUSES: ReadonlySet<string> = new Set([
   "pending",
   "running",
@@ -53,8 +58,8 @@ export class DroneClient {
       method: "GET",
       path: "/api/user/repos",
       query: {
-        page,
-        per_page: limit,
+        page: this.normalizePositiveInteger(page, 1),
+        per_page: this.normalizePageSize(limit),
       },
     });
 
@@ -91,10 +96,10 @@ export class DroneClient {
     limit: number,
     filters: DroneBuildListFilters
   ): Promise<DroneBuild[]> {
-    const requestedLimit = Math.max(limit, 1);
-    const pageSize = Math.min(Math.max(requestedLimit, 25), 100);
+    const requestedLimit = this.normalizePageSize(limit);
+    const pageSize = Math.min(Math.max(requestedLimit, DEFAULT_LIST_PAGE_SIZE), MAX_LIST_PAGE_SIZE);
     const matchingBuilds: DroneBuild[] = [];
-    let currentPage = Math.max(page, 1);
+    let currentPage = this.normalizePositiveInteger(page, 1);
     let scannedPages = 0;
 
     while (matchingBuilds.length < requestedLimit && scannedPages < MAX_FILTER_SCAN_PAGES) {
@@ -124,8 +129,8 @@ export class DroneClient {
         repo
       )}/builds`,
       query: {
-        page,
-        per_page: limit,
+        page: this.normalizePositiveInteger(page, 1),
+        per_page: this.normalizePageSize(limit),
       },
     });
 
@@ -161,12 +166,9 @@ export class DroneClient {
     });
 
     const fullContent = this.mapLogContent(response);
-    const limitChars = query.limitChars;
+    const limitChars = this.normalizeLogCharLimit(query.limitChars);
     const shouldTruncate =
-      typeof limitChars === "number" &&
-      Number.isFinite(limitChars) &&
-      limitChars > 0 &&
-      fullContent.length > limitChars;
+      Number.isFinite(limitChars) && fullContent.length > limitChars;
 
     return {
       stageNumber: query.stageNumber,
@@ -265,9 +267,8 @@ export class DroneClient {
           signal: controller.signal,
         });
 
-        clearTimeout(timeout);
-
         if (RETRYABLE_STATUS_CODES.has(response.status) && attempt < this.config.maxRetries) {
+          clearTimeout(timeout);
           await this.delay(this.backoffMs(attempt));
           continue;
         }
@@ -276,7 +277,8 @@ export class DroneClient {
           throw await this.toApiError(response, options);
         }
 
-        const textBody = await response.text();
+        const textBody = await this.readResponseText(response);
+        clearTimeout(timeout);
         if (!textBody.trim()) {
           return undefined;
         }
@@ -342,7 +344,10 @@ export class DroneClient {
   }
 
   private async toApiError(response: Response, options: RequestOptions): Promise<DroneApiError> {
-    const textBody = await response.text();
+    const textBody = await this.readResponseText(
+      response,
+      Math.min(this.config.maxResponseBytes, 64_000)
+    );
     let details: unknown = textBody;
 
     if (textBody.trim()) {
@@ -555,6 +560,77 @@ export class DroneClient {
 
   private backoffMs(attempt: number): number {
     return Math.min(250 * 2 ** attempt, 2000);
+  }
+
+  private normalizePositiveInteger(value: number | undefined, fallback: number): number {
+    if (!Number.isFinite(value) || !Number.isInteger(value) || (value ?? 0) <= 0) {
+      return fallback;
+    }
+
+    return value as number;
+  }
+
+  private normalizePageSize(value: number | undefined): number {
+    return Math.min(
+      this.normalizePositiveInteger(value, DEFAULT_LIST_PAGE_SIZE),
+      MAX_LIST_PAGE_SIZE
+    );
+  }
+
+  private normalizeLogCharLimit(value: number | undefined): number {
+    return Math.min(
+      this.normalizePositiveInteger(value, DEFAULT_LOG_CHAR_LIMIT),
+      MAX_LOG_CHAR_LIMIT
+    );
+  }
+
+  private async readResponseText(response: Response, maxBytes = this.config.maxResponseBytes): Promise<string> {
+    const contentLength = response.headers.get("content-length");
+    const declaredLength = contentLength ? Number(contentLength) : undefined;
+    if (
+      declaredLength !== undefined &&
+      Number.isFinite(declaredLength) &&
+      declaredLength > maxBytes
+    ) {
+      throw new DroneApiError(
+        `Drone response exceeded the configured ${maxBytes}-byte limit.`,
+        502,
+        "RESPONSE_TOO_LARGE",
+        { declaredLength, maxBytes }
+      );
+    }
+
+    if (!response.body) {
+      return response.text();
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let totalBytes = 0;
+    let text = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel();
+        throw new DroneApiError(
+          `Drone response exceeded the configured ${maxBytes}-byte limit.`,
+          502,
+          "RESPONSE_TOO_LARGE",
+          { totalBytes, maxBytes }
+        );
+      }
+
+      text += decoder.decode(value, { stream: true });
+    }
+
+    text += decoder.decode();
+    return text;
   }
 
   private async delay(ms: number): Promise<void> {

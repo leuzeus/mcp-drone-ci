@@ -19,6 +19,7 @@ test("reconciler refreshes active builds from Drone API", async () => {
     token: "token",
     timeoutMs: 1000,
     maxRetries: 0,
+    maxResponseBytes: 2_000_000,
     fetchImpl: async () =>
       new Response(
         JSON.stringify({
