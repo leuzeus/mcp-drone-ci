@@ -88,6 +88,68 @@ To enable webhook-driven state cache:
 Optional fallback polling:
 - set `MCP_RECONCILE_INTERVAL_MS` (for example `5000`) to periodically refresh active builds from Drone API.
 
+## MCP Tools
+Read tools:
+- `drone_list_repos`: list repositories visible to the Drone token
+- `drone_list_builds`: list build summaries for a repository
+- `drone_get_build`: fetch full details for one build
+- `drone_get_build_logs`: fetch one stage/step log stream, with optional truncation
+- `drone_get_cached_build_state`: inspect webhook-cached build state
+
+Action tools (only when `MCP_ENABLE_WRITE_ACTIONS=true`):
+- `drone_restart_build`
+- `drone_stop_build`
+- `drone_approve_build`
+- `drone_decline_build`
+
+Build filters supported by `drone_list_builds`:
+- `owner` and `repo` are always required
+- optional `prNumber`
+- optional `sourceBranch`
+- optional `targetBranch`
+- optional `page` and `limit`
+
+Example:
+
+```json
+{
+  "name": "drone_list_builds",
+  "arguments": {
+    "owner": "leuzeus",
+    "repo": "gowire",
+    "prNumber": 510,
+    "sourceBranch": "S076-gcmp-v2-planning",
+    "targetBranch": "dev",
+    "limit": 5
+  }
+}
+```
+
+## Token Efficiency
+This MCP is designed so agents can stay efficient if they use the tools in the intended order:
+
+1. Use `drone_list_builds` to search.
+2. Use `drone_get_build` only for the specific build you want to inspect in detail.
+3. Use `drone_get_build_logs` with `limitChars` when you need failure evidence.
+
+Important behavior:
+- `drone_list_builds` returns compact build summaries, not full build payloads
+- the full build `message` and other verbose fields are reserved for `drone_get_build`
+- MCP JSON responses are serialized compactly to reduce token overhead
+
+Recommended agent patterns:
+- prefer `owner/repo + prNumber` for PR-centric queries
+- otherwise use `owner/repo + sourceBranch + targetBranch`
+- keep `limit` small whenever possible
+- avoid `drone_list_repos` unless cross-repository discovery is explicitly needed
+- avoid broad `drone_list_builds` calls without filters on large repositories
+
+Recommended order of precision:
+1. `owner/repo + buildNumber`
+2. `owner/repo + prNumber`
+3. `owner/repo + sourceBranch + targetBranch`
+4. `owner/repo + targetBranch`
+
 ## Environment Variables
 Required:
 - `DRONE_BASE_URL`: Drone base URL (for example `https://drone.example.com`)

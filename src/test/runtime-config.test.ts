@@ -9,6 +9,9 @@ const ENV_KEYS = [
   "DRONE_TIMEOUT_MS",
   "DRONE_MAX_RETRIES",
   "MCP_ENABLE_WRITE_ACTIONS",
+  "MCP_RECONCILE_INTERVAL_MS",
+  "MCP_WEBHOOK_PORT",
+  "MCP_WEBHOOK_PATH",
 ] as const;
 
 function withEnv(
@@ -42,15 +45,18 @@ function withEnv(
   }
 }
 
-test("loadRuntimeConfig reads required variables", () => {
+test("loadRuntimeConfig reads required variables with webhook disabled", () => {
   withEnv(
     {
       DRONE_BASE_URL: "https://drone.example.com",
       DRONE_TOKEN: "token",
-      DRONE_WEBHOOK_SECRET: "secret",
       DRONE_TIMEOUT_MS: "15000",
       DRONE_MAX_RETRIES: "3",
       MCP_ENABLE_WRITE_ACTIONS: "true",
+      MCP_RECONCILE_INTERVAL_MS: "5000",
+      MCP_WEBHOOK_PORT: "0",
+      MCP_WEBHOOK_PATH: "/webhook/drone",
+      DRONE_WEBHOOK_SECRET: undefined,
     },
     () => {
       const config = loadRuntimeConfig();
@@ -58,6 +64,24 @@ test("loadRuntimeConfig reads required variables", () => {
       assert.equal(config.drone.timeoutMs, 15000);
       assert.equal(config.drone.maxRetries, 3);
       assert.equal(config.mcp.readWriteActions, true);
+      assert.equal(config.mcp.reconcileIntervalMs, 5000);
+      assert.equal(config.webhook.port, 0);
+      assert.equal(config.webhook.path, "/webhook/drone");
+      assert.equal(config.webhook.secret, "");
+    }
+  );
+});
+
+test("loadRuntimeConfig requires webhook secret when webhook server is enabled", () => {
+  withEnv(
+    {
+      DRONE_BASE_URL: "https://drone.example.com",
+      DRONE_TOKEN: "token",
+      MCP_WEBHOOK_PORT: "8080",
+      DRONE_WEBHOOK_SECRET: undefined,
+    },
+    () => {
+      assert.throws(() => loadRuntimeConfig(), /DRONE_WEBHOOK_SECRET/);
     }
   );
 });

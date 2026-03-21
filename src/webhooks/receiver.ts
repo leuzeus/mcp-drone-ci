@@ -13,10 +13,12 @@ export interface DroneWebhookPayload {
   repository?: {
     namespace?: string;
     name?: string;
+    [key: string]: unknown;
   };
   build?: {
     number?: number;
     status?: DroneBuildStatus;
+    [key: string]: unknown;
   };
   [key: string]: unknown;
 }

@@ -1,4 +1,5 @@
-import { DroneClient } from "../../drone/client";
+import { DroneBuildListFilters, DroneClient } from "../../drone/client";
+import { BuildStateStore } from "../../state/build-state-store";
 import { DroneBuild, DroneBuildLogChunk, DroneRepo } from "../../types/drone";
 import { McpToolDefinition } from "../../types/mcp";
 
@@ -16,10 +17,29 @@ interface ListBuildsInput {
   repo: string;
   page?: number;
   limit?: number;
+  prNumber?: number;
+  sourceBranch?: string;
+  targetBranch?: string;
+}
+
+interface DroneBuildSummary {
+  owner: string;
+  repo: string;
+  number: number;
+  prNumber?: number;
+  status: DroneBuild["status"];
+  event: string;
+  sourceBranch?: string;
+  target?: string;
+  author?: string;
+  createdAtUnix: number;
+  startedAtUnix?: number;
+  finishedAtUnix?: number;
 }
 
 interface ListBuildsOutput {
-  builds: DroneBuild[];
+  source: "api";
+  builds: DroneBuildSummary[];
 }
 
 interface GetBuildInput {
@@ -29,7 +49,9 @@ interface GetBuildInput {
 }
 
 interface GetBuildOutput {
+  source: "api" | "cache";
   build: DroneBuild;
+  stale?: boolean;
 }
 
 interface GetBuildLogsInput {
@@ -42,11 +64,46 @@ interface GetBuildLogsInput {
 }
 
 interface GetBuildLogsOutput {
+  source: "api";
   log: DroneBuildLogChunk;
 }
 
+function toBuildFilters(input: {
+  prNumber?: number;
+  sourceBranch?: string;
+  targetBranch?: string;
+}): DroneBuildListFilters {
+  return {
+    prNumber: input.prNumber,
+    sourceBranch: input.sourceBranch,
+    targetBranch: input.targetBranch,
+  };
+}
+
+function toBuildSummary(build: DroneBuild): DroneBuildSummary {
+  return {
+    owner: build.owner,
+    repo: build.repo,
+    number: build.number,
+    prNumber: build.prNumber,
+    status: build.status,
+    event: build.event,
+    sourceBranch: build.sourceBranch,
+    target: build.target,
+    author: build.author,
+    createdAtUnix: build.createdAtUnix,
+    startedAtUnix: build.startedAtUnix,
+    finishedAtUnix: build.finishedAtUnix,
+  };
+}
+
+export interface ReadOnlyToolsOptions {
+  buildStateStore?: BuildStateStore;
+}
+
 export function createReadOnlyTools(
-  client: DroneClient
+  client: DroneClient,
+  options: ReadOnlyToolsOptions = {}
 ): Array<McpToolDefinition<any, any>> {
   const listReposTool: McpToolDefinition<ListReposInput, ListReposOutput> = {
     name: "drone_list_repos",
@@ -59,39 +116,66 @@ export function createReadOnlyTools(
   const listBuildsTool: McpToolDefinition<ListBuildsInput, ListBuildsOutput> = {
     name: "drone_list_builds",
     description: "List builds for a repository.",
-    execute: async (input) => ({
-      builds: await client.listBuilds(
+    execute: async (input) => {
+      const builds = await client.listBuilds(
         input.owner,
         input.repo,
         input.page,
-        input.limit
-      ),
-    }),
+        input.limit,
+        toBuildFilters(input)
+      );
+      for (const build of builds) {
+        options.buildStateStore?.upsertFromBuild(build);
+      }
+
+      return {
+        source: "api",
+        builds: builds.map((build) => toBuildSummary(build)),
+      };
+    },
   };
 
   const getBuildTool: McpToolDefinition<GetBuildInput, GetBuildOutput> = {
     name: "drone_get_build",
     description: "Get one build details by build number.",
-    execute: async (input) => ({
-      build: await client.getBuild(input.owner, input.repo, input.buildNumber),
-    }),
+    execute: async (input) => {
+      try {
+        const build = await client.getBuild(input.owner, input.repo, input.buildNumber);
+        options.buildStateStore?.upsertFromBuild(build);
+        return {
+          source: "api",
+          build,
+        };
+      } catch (error) {
+        const cached = options.buildStateStore?.get(input.owner, input.repo, input.buildNumber);
+        if (cached?.build) {
+          return {
+            source: "cache",
+            build: cached.build,
+            stale: true,
+          };
+        }
+
+        throw error;
+      }
+    },
   };
 
-  const getBuildLogsTool: McpToolDefinition<GetBuildLogsInput, GetBuildLogsOutput> =
-    {
-      name: "drone_get_build_logs",
-      description: "Get logs for one build stage/step.",
-      execute: async (input) => ({
-        log: await client.getBuildLogs({
-          owner: input.owner,
-          repo: input.repo,
-          buildNumber: input.buildNumber,
-          stageNumber: input.stageNumber,
-          stepNumber: input.stepNumber,
-          limitChars: input.limitChars,
-        }),
+  const getBuildLogsTool: McpToolDefinition<GetBuildLogsInput, GetBuildLogsOutput> = {
+    name: "drone_get_build_logs",
+    description: "Get logs for one build stage/step.",
+    execute: async (input) => ({
+      source: "api",
+      log: await client.getBuildLogs({
+        owner: input.owner,
+        repo: input.repo,
+        buildNumber: input.buildNumber,
+        stageNumber: input.stageNumber,
+        stepNumber: input.stepNumber,
+        limitChars: input.limitChars,
       }),
-    };
+    }),
+  };
 
   return [listReposTool, listBuildsTool, getBuildTool, getBuildLogsTool];
 }
