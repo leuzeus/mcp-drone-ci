@@ -4,6 +4,7 @@ import { loadRuntimeConfig } from "../config/runtime-config";
 
 const ENV_KEYS = [
   "DRONE_BASE_URL",
+  "DRONE_ALLOW_INSECURE_HTTP",
   "DRONE_TOKEN",
   "DRONE_WEBHOOK_SECRET",
   "DRONE_TIMEOUT_MS",
@@ -118,11 +119,27 @@ test("loadRuntimeConfig rejects insecure remote http Drone URLs", () => {
   withEnv(
     {
       DRONE_BASE_URL: "http://drone.example.com",
+      DRONE_ALLOW_INSECURE_HTTP: "false",
       DRONE_TOKEN: "token",
       DRONE_WEBHOOK_SECRET: "secret",
     },
     () => {
       assert.throws(() => loadRuntimeConfig(), /must use https/i);
+    }
+  );
+});
+
+test("loadRuntimeConfig allows remote http Drone URLs with explicit override", () => {
+  withEnv(
+    {
+      DRONE_BASE_URL: "http://drone.example.com",
+      DRONE_ALLOW_INSECURE_HTTP: "true",
+      DRONE_TOKEN: "token",
+      DRONE_WEBHOOK_SECRET: "secret",
+    },
+    () => {
+      const config = loadRuntimeConfig();
+      assert.equal(config.drone.baseUrl, "http://drone.example.com");
     }
   );
 });

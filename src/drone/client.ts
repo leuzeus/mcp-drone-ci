@@ -22,6 +22,12 @@ export interface DroneBuildListFilters {
   targetBranch?: string;
 }
 
+export interface DroneBuildListResult {
+  builds: DroneBuild[];
+  incomplete: boolean;
+  scannedPages: number;
+}
+
 interface RequestOptions {
   method: "GET" | "POST" | "DELETE";
   path: string;
@@ -82,11 +88,42 @@ export class DroneClient {
     limit = 25,
     filters?: DroneBuildListFilters
   ): Promise<DroneBuild[]> {
+    const result = await this.listBuildsDetailed(owner, repo, page, limit, filters);
+
+    if (result.incomplete) {
+      throw new DroneApiError(
+        "Filtered build lookup reached the repository scan limit before exhaustion. Refine the filters or query a build directly.",
+        409,
+        "FILTER_SCAN_LIMIT_EXCEEDED",
+        {
+          owner,
+          repo,
+          filters,
+          scannedPages: result.scannedPages,
+          scanLimitPages: MAX_FILTER_SCAN_PAGES,
+        }
+      );
+    }
+
+    return result.builds;
+  }
+
+  async listBuildsDetailed(
+    owner: string,
+    repo: string,
+    page = 1,
+    limit = 25,
+    filters?: DroneBuildListFilters
+  ): Promise<DroneBuildListResult> {
     if (filters && this.hasBuildFilters(filters)) {
       return this.listBuildsWithFilters(owner, repo, page, limit, filters);
     }
 
-    return this.fetchBuildsPage(owner, repo, page, limit);
+    return {
+      builds: await this.fetchBuildsPage(owner, repo, page, limit),
+      incomplete: false,
+      scannedPages: 1,
+    };
   }
 
   private async listBuildsWithFilters(
@@ -95,17 +132,19 @@ export class DroneClient {
     page: number,
     limit: number,
     filters: DroneBuildListFilters
-  ): Promise<DroneBuild[]> {
+  ): Promise<DroneBuildListResult> {
     const requestedLimit = this.normalizePageSize(limit);
     const pageSize = Math.min(Math.max(requestedLimit, DEFAULT_LIST_PAGE_SIZE), MAX_LIST_PAGE_SIZE);
     const matchingBuilds: DroneBuild[] = [];
     let currentPage = this.normalizePositiveInteger(page, 1);
     let scannedPages = 0;
+    let morePagesLikely = false;
 
     while (matchingBuilds.length < requestedLimit && scannedPages < MAX_FILTER_SCAN_PAGES) {
       const builds = await this.fetchBuildsPage(owner, repo, currentPage, pageSize);
       matchingBuilds.push(...builds.filter((build) => this.matchesBuildFilters(build, filters)));
       scannedPages += 1;
+      morePagesLikely = builds.length === pageSize;
 
       if (builds.length < pageSize) {
         break;
@@ -114,7 +153,14 @@ export class DroneClient {
       currentPage += 1;
     }
 
-    return matchingBuilds.slice(0, requestedLimit);
+    return {
+      builds: matchingBuilds.slice(0, requestedLimit),
+      incomplete:
+        matchingBuilds.length < requestedLimit &&
+        scannedPages >= MAX_FILTER_SCAN_PAGES &&
+        morePagesLikely,
+      scannedPages,
+    };
   }
 
   private async fetchBuildsPage(

@@ -21,17 +21,21 @@ test("drone_list_builds forwards PR and branch filters to the client", async () 
     async listRepos() {
       return [];
     },
-    async listBuilds(...args: unknown[]) {
+    async listBuildsDetailed(...args: unknown[]) {
       calls.push(args);
-      return [
-        createBuild({
-          number: 102,
-          event: "pull_request",
-          prNumber: 501,
-          sourceBranch: "feature-b",
-          target: "main",
-        }),
-      ];
+      return {
+        builds: [
+          createBuild({
+            number: 102,
+            event: "pull_request",
+            prNumber: 501,
+            sourceBranch: "feature-b",
+            target: "main",
+          }),
+        ],
+        incomplete: false,
+        scannedPages: 2,
+      };
     },
     async getBuild() {
       throw new Error("not used");
@@ -56,6 +60,8 @@ test("drone_list_builds forwards PR and branch filters to the client", async () 
   );
 
   assert.equal(output.source, "api");
+  assert.equal(output.incomplete, false);
+  assert.equal(output.scannedPages, 2);
   assert.equal(output.builds.length, 1);
   assert.equal(output.builds[0].number, 102);
   assert.equal("message" in output.builds[0], false);
@@ -72,4 +78,41 @@ test("drone_list_builds forwards PR and branch filters to the client", async () 
       },
     ],
   ]);
+});
+
+test("drone_list_builds surfaces incomplete filtered searches", async () => {
+  const client = {
+    async listRepos() {
+      return [];
+    },
+    async listBuildsDetailed() {
+      return {
+        builds: [],
+        incomplete: true,
+        scannedPages: 20,
+      };
+    },
+    async getBuild() {
+      throw new Error("not used");
+    },
+    async getBuildLogs() {
+      throw new Error("not used");
+    },
+  } as unknown as any;
+
+  const tool = createReadOnlyTools(client).find((entry) => entry.name === "drone_list_builds");
+  assert.ok(tool);
+
+  const output = await tool.execute(
+    {
+      owner: "acme",
+      repo: "api",
+      prNumber: 9999,
+    },
+    { requestId: "req-2", caller: "test" }
+  );
+
+  assert.equal(output.incomplete, true);
+  assert.equal(output.scannedPages, 20);
+  assert.match(output.warning, /scan limit/i);
 });

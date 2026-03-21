@@ -149,3 +149,52 @@ test("webhook HTTP server rejects non-JSON payloads before parsing", async () =>
     });
   }
 });
+
+test("webhook HTTP server returns 413 for oversized payloads", async () => {
+  const secret = "webhook-secret";
+  const store = new BuildStateStore();
+
+  const server = await startDroneWebhookHttpServer({
+    config: {
+      port: 0,
+      path: "/webhook/drone",
+      maxBodySizeBytes: 32,
+    },
+    receiver: new WebhookReceiver(secret),
+    buildStateStore: store,
+  });
+
+  try {
+    const address = server.address() as AddressInfo;
+    const body = JSON.stringify({
+      action: "updated",
+      repository: {
+        namespace: "acme",
+        name: "api",
+      },
+      build: {
+        number: 12,
+        status: "running",
+        created: 1700000000,
+        message: "x".repeat(256),
+      },
+    });
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/webhook/drone`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-drone-event": "build:updated",
+        "x-drone-signature": sign(secret, body),
+      },
+      body,
+    });
+
+    assert.equal(response.status, 413);
+    assert.equal(store.get("acme", "api", 12), undefined);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+});

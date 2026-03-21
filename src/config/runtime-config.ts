@@ -90,6 +90,7 @@ function readWebhookSecret(port: number): string {
 
 function readDroneBaseUrl(): string {
   const raw = readRequired("DRONE_BASE_URL");
+  const allowInsecureHttp = readBoolean("DRONE_ALLOW_INSECURE_HTTP", false);
   let url: URL;
 
   try {
@@ -102,9 +103,13 @@ function readDroneBaseUrl(): string {
     throw new Error("Environment variable DRONE_BASE_URL must use http or https.");
   }
 
-  if (url.protocol === "http:" && !LOOPBACK_HOSTS.has(url.hostname)) {
+  if (
+    url.protocol === "http:" &&
+    !allowInsecureHttp &&
+    !LOOPBACK_HOSTS.has(url.hostname)
+  ) {
     throw new Error(
-      "Environment variable DRONE_BASE_URL must use https unless it targets a loopback host."
+      "Environment variable DRONE_BASE_URL must use https unless it targets a loopback host or DRONE_ALLOW_INSECURE_HTTP=true is set."
     );
   }
 

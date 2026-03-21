@@ -302,10 +302,48 @@ test("listBuilds filtered lookup stops after a bounded number of pages", async (
   );
 
   const client = createClient(fetchImpl);
-  const builds = await client.listBuilds("acme", "api", 1, 1, {
+  await assert.rejects(
+    () =>
+      client.listBuilds("acme", "api", 1, 1, {
+        prNumber: 9999,
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof DroneApiError);
+      assert.equal(error.code, "FILTER_SCAN_LIMIT_EXCEEDED");
+      return true;
+    }
+  );
+
+  assert.equal(calls.length, 20);
+});
+
+test("listBuildsDetailed reports incomplete filtered searches without a silent false negative", async () => {
+  const { fetchImpl, calls } = createFetchMock(async () =>
+    new Response(
+      JSON.stringify(
+        Array.from({ length: 25 }, (_, index) => ({
+          number: index + 1,
+          status: "success",
+          event: "pull_request",
+          created: 1700000000 + index,
+          repo_namespace: "acme",
+          repo_name: "api",
+          source: "feature-a",
+          target: "main",
+          ref: `refs/pull/${index + 1}/head`,
+        }))
+      ),
+      { status: 200, headers: { "content-type": "application/json" } }
+    )
+  );
+
+  const client = createClient(fetchImpl);
+  const result = await client.listBuildsDetailed("acme", "api", 1, 1, {
     prNumber: 9999,
   });
 
-  assert.equal(builds.length, 0);
+  assert.equal(result.builds.length, 0);
+  assert.equal(result.incomplete, true);
+  assert.equal(result.scannedPages, 20);
   assert.equal(calls.length, 20);
 });

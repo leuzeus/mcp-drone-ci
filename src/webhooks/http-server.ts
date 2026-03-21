@@ -79,22 +79,44 @@ async function readBody(req: IncomingMessage, maxBodySizeBytes: number): Promise
   return new Promise((resolve, reject) => {
     let total = 0;
     const chunks: Buffer[] = [];
+    let settled = false;
 
-    req.on("data", (chunk: Buffer) => {
-      total += chunk.length;
-      if (total > maxBodySizeBytes) {
-        reject(new HttpResponseError(413, "Webhook payload exceeds maximum body size."));
-        req.destroy();
+    const rejectOnce = (error: Error) => {
+      if (settled) {
         return;
       }
+      settled = true;
+      reject(error);
+    };
+
+    const resolveOnce = (body: string) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(body);
+    };
+
+    req.on("data", (chunk: Buffer) => {
+      if (settled) {
+        return;
+      }
+
+      total += chunk.length;
+      if (total > maxBodySizeBytes) {
+        req.resume();
+        rejectOnce(new HttpResponseError(413, "Webhook payload exceeds maximum body size."));
+        return;
+      }
+
       chunks.push(chunk);
     });
 
     req.on("end", () => {
-      resolve(Buffer.concat(chunks).toString("utf8"));
+      resolveOnce(Buffer.concat(chunks).toString("utf8"));
     });
 
-    req.on("error", reject);
+    req.on("error", rejectOnce);
   });
 }
 

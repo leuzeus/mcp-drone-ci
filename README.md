@@ -121,6 +121,7 @@ Build filters supported by `drone_list_builds`:
 Numeric inputs:
 - build identifiers and pagination values are exposed as generic MCP numbers for broad client compatibility
 - integer, positivity, and max-value checks are enforced by the server when the tool is executed
+- filtered `drone_list_builds` searches report when the repository scan limit is hit, instead of silently returning a false negative
 
 Example:
 
@@ -169,6 +170,7 @@ Required:
 - `DRONE_TOKEN`: Drone API token
 
 Optional:
+- `DRONE_ALLOW_INSECURE_HTTP` (default `false`, only set `true` for trusted internal Drone deployments without TLS)
 - `DRONE_TIMEOUT_MS` (default `10000`)
 - `DRONE_MAX_RETRIES` (default `2`)
 - `MCP_ENABLE_WRITE_ACTIONS` (default `false`)
