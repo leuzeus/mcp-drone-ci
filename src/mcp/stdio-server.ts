@@ -36,11 +36,57 @@ function parseRequiredNumber(value: string | string[] | undefined, name: string)
   const raw = Array.isArray(value) ? value[0] : value;
   const parsed = Number(raw);
 
-  if (!Number.isFinite(parsed) || parsed <= 0) {
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
     throw new Error(`Invalid '${name}' value in resource URI.`);
   }
 
   return parsed;
+}
+
+function parseRequiredString(value: string, name: string): string {
+  const parsed = value.trim();
+
+  if (!parsed) {
+    throw new Error(`'${name}' is required.`);
+  }
+
+  return parsed;
+}
+
+function parseOptionalString(value: string | undefined, name: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const parsed = value.trim();
+  if (!parsed) {
+    throw new Error(`'${name}' must not be empty when provided.`);
+  }
+
+  return parsed;
+}
+
+function parsePositiveInteger(
+  value: number | undefined,
+  name: string,
+  options: { required?: boolean; max?: number } = {}
+): number | undefined {
+  if (value === undefined) {
+    if (options.required) {
+      throw new Error(`'${name}' is required.`);
+    }
+    return undefined;
+  }
+
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+    throw new Error(`'${name}' must be a positive integer.`);
+  }
+
+  if (options.max !== undefined && value > options.max) {
+    throw new Error(`'${name}' must be less than or equal to ${options.max}.`);
+  }
+
+  return value;
 }
 
 export async function startStdioMcpServer(
@@ -57,36 +103,54 @@ export async function startStdioMcpServer(
     registry.resources.map((resource) => [resource.uriTemplate, resource])
   );
 
+  async function executeTool(name: string, input: unknown, requestId: string) {
+    const tool = toolsByName.get(name);
+    if (!tool) {
+      return toErrorResult(`Tool '${name}' is not registered.`);
+    }
+
+    try {
+      const output = await tool.execute(input, {
+        requestId,
+        caller: "mcp",
+      });
+      return toTextResult(output);
+    } catch (error) {
+      return toErrorResult(error);
+    }
+  }
+
   const server = new McpServer({
     name: "mcp-drone-ci",
     version: "1.0.0",
   });
 
   server.registerTool(
+    "drone_ping",
+    {
+      description: "Minimal diagnostic tool for MCP client compatibility checks.",
+    },
+    async () => toTextResult({ ok: true, server: "mcp-drone-ci" })
+  );
+
+  server.registerTool(
     "drone_list_repos",
     {
       description: "List repositories visible to the Drone token.",
       inputSchema: {
-        page: z.number().int().positive().optional(),
-        limit: z.number().int().positive().optional(),
+        page: z.number().optional(),
+        limit: z.number().optional(),
       },
     },
-    async (input, extra) => {
-      const tool = toolsByName.get("drone_list_repos");
-      if (!tool) {
-        return toErrorResult("Tool 'drone_list_repos' is not registered.");
-      }
-
-      try {
-        const output = await tool.execute(input, {
-          requestId: String(extra.requestId),
-          caller: "mcp",
-        });
-        return toTextResult(output);
-      } catch (error) {
-        return toErrorResult(error);
-      }
-    }
+    async (input, extra) =>
+      executeTool(
+        "drone_list_repos",
+        {
+          page: parsePositiveInteger(input.page, "page"),
+          limit: parsePositiveInteger(input.limit, "limit"),
+        },
+        String(extra.requestId)
+      )
   );
 
   server.registerTool(
@@ -94,31 +158,29 @@ export async function startStdioMcpServer(
     {
       description: "List builds for a repository.",
       inputSchema: {
-        owner: z.string().min(1),
-        repo: z.string().min(1),
-        page: z.number().int().positive().optional(),
-        limit: z.number().int().positive().optional(),
-        prNumber: z.number().int().positive().optional(),
-        sourceBranch: z.string().min(1).optional(),
-        targetBranch: z.string().min(1).optional(),
+        owner: z.string(),
+        repo: z.string(),
+        page: z.number().optional(),
+        limit: z.number().optional(),
+        prNumber: z.number().optional(),
+        sourceBranch: z.string().optional(),
+        targetBranch: z.string().optional(),
       },
     },
-    async (input, extra) => {
-      const tool = toolsByName.get("drone_list_builds");
-      if (!tool) {
-        return toErrorResult("Tool 'drone_list_builds' is not registered.");
-      }
-
-      try {
-        const output = await tool.execute(input, {
-          requestId: String(extra.requestId),
-          caller: "mcp",
-        });
-        return toTextResult(output);
-      } catch (error) {
-        return toErrorResult(error);
-      }
-    }
+    async (input, extra) =>
+      executeTool(
+        "drone_list_builds",
+        {
+          owner: parseRequiredString(input.owner, "owner"),
+          repo: parseRequiredString(input.repo, "repo"),
+          page: parsePositiveInteger(input.page, "page"),
+          limit: parsePositiveInteger(input.limit, "limit"),
+          prNumber: parsePositiveInteger(input.prNumber, "prNumber"),
+          sourceBranch: parseOptionalString(input.sourceBranch, "sourceBranch"),
+          targetBranch: parseOptionalString(input.targetBranch, "targetBranch"),
+        },
+        String(extra.requestId)
+      )
   );
 
   server.registerTool(
@@ -126,27 +188,23 @@ export async function startStdioMcpServer(
     {
       description: "Get one build details by build number.",
       inputSchema: {
-        owner: z.string().min(1),
-        repo: z.string().min(1),
-        buildNumber: z.number().int().positive(),
+        owner: z.string(),
+        repo: z.string(),
+        buildNumber: z.number(),
       },
     },
-    async (input, extra) => {
-      const tool = toolsByName.get("drone_get_build");
-      if (!tool) {
-        return toErrorResult("Tool 'drone_get_build' is not registered.");
-      }
-
-      try {
-        const output = await tool.execute(input, {
-          requestId: String(extra.requestId),
-          caller: "mcp",
-        });
-        return toTextResult(output);
-      } catch (error) {
-        return toErrorResult(error);
-      }
-    }
+    async (input, extra) =>
+      executeTool(
+        "drone_get_build",
+        {
+          owner: parseRequiredString(input.owner, "owner"),
+          repo: parseRequiredString(input.repo, "repo"),
+          buildNumber: parsePositiveInteger(input.buildNumber, "buildNumber", {
+            required: true,
+          }),
+        },
+        String(extra.requestId)
+      )
   );
 
   server.registerTool(
@@ -154,30 +212,33 @@ export async function startStdioMcpServer(
     {
       description: "Get logs for one build stage/step.",
       inputSchema: {
-        owner: z.string().min(1),
-        repo: z.string().min(1),
-        buildNumber: z.number().int().positive(),
-        stageNumber: z.number().int().positive(),
-        stepNumber: z.number().int().positive(),
-        limitChars: z.number().int().positive().optional(),
+        owner: z.string(),
+        repo: z.string(),
+        buildNumber: z.number(),
+        stageNumber: z.number(),
+        stepNumber: z.number(),
+        limitChars: z.number().optional(),
       },
     },
-    async (input, extra) => {
-      const tool = toolsByName.get("drone_get_build_logs");
-      if (!tool) {
-        return toErrorResult("Tool 'drone_get_build_logs' is not registered.");
-      }
-
-      try {
-        const output = await tool.execute(input, {
-          requestId: String(extra.requestId),
-          caller: "mcp",
-        });
-        return toTextResult(output);
-      } catch (error) {
-        return toErrorResult(error);
-      }
-    }
+    async (input, extra) =>
+      executeTool(
+        "drone_get_build_logs",
+        {
+          owner: parseRequiredString(input.owner, "owner"),
+          repo: parseRequiredString(input.repo, "repo"),
+          buildNumber: parsePositiveInteger(input.buildNumber, "buildNumber", {
+            required: true,
+          }),
+          stageNumber: parsePositiveInteger(input.stageNumber, "stageNumber", {
+            required: true,
+          }),
+          stepNumber: parsePositiveInteger(input.stepNumber, "stepNumber", {
+            required: true,
+          }),
+          limitChars: parsePositiveInteger(input.limitChars, "limitChars"),
+        },
+        String(extra.requestId)
+      )
   );
 
   if (options.readWriteActions) {
@@ -186,28 +247,25 @@ export async function startStdioMcpServer(
       {
         description: "Restart one build in Drone.",
         inputSchema: {
-          owner: z.string().min(1),
-          repo: z.string().min(1),
-          buildNumber: z.number().int().positive(),
+          owner: z.string(),
+          repo: z.string(),
+          buildNumber: z.number(),
           dryRun: z.boolean().optional(),
         },
       },
-      async (input, extra) => {
-        const tool = toolsByName.get("drone_restart_build");
-        if (!tool) {
-          return toErrorResult("Tool 'drone_restart_build' is not registered.");
-        }
-
-        try {
-          const output = await tool.execute(input, {
-            requestId: String(extra.requestId),
-            caller: "mcp",
-          });
-          return toTextResult(output);
-        } catch (error) {
-          return toErrorResult(error);
-        }
-      }
+      async (input, extra) =>
+        executeTool(
+          "drone_restart_build",
+          {
+            owner: parseRequiredString(input.owner, "owner"),
+            repo: parseRequiredString(input.repo, "repo"),
+            buildNumber: parsePositiveInteger(input.buildNumber, "buildNumber", {
+              required: true,
+            }),
+            dryRun: input.dryRun,
+          },
+          String(extra.requestId)
+        )
     );
 
     server.registerTool(
@@ -215,28 +273,25 @@ export async function startStdioMcpServer(
       {
         description: "Stop one running build in Drone.",
         inputSchema: {
-          owner: z.string().min(1),
-          repo: z.string().min(1),
-          buildNumber: z.number().int().positive(),
+          owner: z.string(),
+          repo: z.string(),
+          buildNumber: z.number(),
           dryRun: z.boolean().optional(),
         },
       },
-      async (input, extra) => {
-        const tool = toolsByName.get("drone_stop_build");
-        if (!tool) {
-          return toErrorResult("Tool 'drone_stop_build' is not registered.");
-        }
-
-        try {
-          const output = await tool.execute(input, {
-            requestId: String(extra.requestId),
-            caller: "mcp",
-          });
-          return toTextResult(output);
-        } catch (error) {
-          return toErrorResult(error);
-        }
-      }
+      async (input, extra) =>
+        executeTool(
+          "drone_stop_build",
+          {
+            owner: parseRequiredString(input.owner, "owner"),
+            repo: parseRequiredString(input.repo, "repo"),
+            buildNumber: parsePositiveInteger(input.buildNumber, "buildNumber", {
+              required: true,
+            }),
+            dryRun: input.dryRun,
+          },
+          String(extra.requestId)
+        )
     );
 
     server.registerTool(
@@ -244,28 +299,25 @@ export async function startStdioMcpServer(
       {
         description: "Approve one gated build in Drone.",
         inputSchema: {
-          owner: z.string().min(1),
-          repo: z.string().min(1),
-          buildNumber: z.number().int().positive(),
+          owner: z.string(),
+          repo: z.string(),
+          buildNumber: z.number(),
           dryRun: z.boolean().optional(),
         },
       },
-      async (input, extra) => {
-        const tool = toolsByName.get("drone_approve_build");
-        if (!tool) {
-          return toErrorResult("Tool 'drone_approve_build' is not registered.");
-        }
-
-        try {
-          const output = await tool.execute(input, {
-            requestId: String(extra.requestId),
-            caller: "mcp",
-          });
-          return toTextResult(output);
-        } catch (error) {
-          return toErrorResult(error);
-        }
-      }
+      async (input, extra) =>
+        executeTool(
+          "drone_approve_build",
+          {
+            owner: parseRequiredString(input.owner, "owner"),
+            repo: parseRequiredString(input.repo, "repo"),
+            buildNumber: parsePositiveInteger(input.buildNumber, "buildNumber", {
+              required: true,
+            }),
+            dryRun: input.dryRun,
+          },
+          String(extra.requestId)
+        )
     );
 
     server.registerTool(
@@ -273,28 +325,25 @@ export async function startStdioMcpServer(
       {
         description: "Decline one gated build in Drone.",
         inputSchema: {
-          owner: z.string().min(1),
-          repo: z.string().min(1),
-          buildNumber: z.number().int().positive(),
+          owner: z.string(),
+          repo: z.string(),
+          buildNumber: z.number(),
           dryRun: z.boolean().optional(),
         },
       },
-      async (input, extra) => {
-        const tool = toolsByName.get("drone_decline_build");
-        if (!tool) {
-          return toErrorResult("Tool 'drone_decline_build' is not registered.");
-        }
-
-        try {
-          const output = await tool.execute(input, {
-            requestId: String(extra.requestId),
-            caller: "mcp",
-          });
-          return toTextResult(output);
-        } catch (error) {
-          return toErrorResult(error);
-        }
-      }
+      async (input, extra) =>
+        executeTool(
+          "drone_decline_build",
+          {
+            owner: parseRequiredString(input.owner, "owner"),
+            repo: parseRequiredString(input.repo, "repo"),
+            buildNumber: parsePositiveInteger(input.buildNumber, "buildNumber", {
+              required: true,
+            }),
+            dryRun: input.dryRun,
+          },
+          String(extra.requestId)
+        )
     );
   }
 
@@ -305,27 +354,26 @@ export async function startStdioMcpServer(
         description:
           "Read webhook-cached build state. If buildNumber is omitted, returns recent snapshots for the repository.",
         inputSchema: {
-          owner: z.string().min(1),
-          repo: z.string().min(1),
-          buildNumber: z.number().int().positive().optional(),
-          limit: z.number().int().positive().max(100).optional(),
+          owner: z.string(),
+          repo: z.string(),
+          buildNumber: z.number().optional(),
+          limit: z.number().optional(),
         },
       },
       async (input) => {
         try {
-          if (input.buildNumber) {
-            const snapshot = options.buildStateStore?.get(
-              input.owner,
-              input.repo,
-              input.buildNumber
-            );
+          const owner = parseRequiredString(input.owner, "owner");
+          const repo = parseRequiredString(input.repo, "repo");
+          const buildNumber = parsePositiveInteger(input.buildNumber, "buildNumber");
+          const limit = parsePositiveInteger(input.limit, "limit", { max: 100 });
+
+          if (buildNumber !== undefined) {
+            const snapshot = options.buildStateStore?.get(owner, repo, buildNumber);
             return toTextResult({ snapshot: snapshot ?? null });
           }
 
           const snapshots =
-            options.buildStateStore
-              ?.listByRepo(input.owner, input.repo)
-              .slice(0, input.limit ?? 20) ?? [];
+            options.buildStateStore?.listByRepo(owner, repo).slice(0, limit ?? 20) ?? [];
           return toTextResult({ snapshots });
         } catch (error) {
           return toErrorResult(error);

@@ -76,6 +76,11 @@ Windows/JetBrains note:
 - set `DRONE_TOKEN` as a Windows environment variable (`User` or `Machine` scope),
 - do not set `DRONE_TOKEN` to a placeholder like `"${DRONE_TOKEN}"` in MCP `env` if your client does not expand placeholders; otherwise the literal string is sent and Drone authentication fails (`401`).
 
+Client compatibility note:
+- MCP tool `inputSchema` values are intentionally kept permissive to improve compatibility with clients such as JetBrains and Codex.
+- Strict business validation still happens in the tool handlers, so invalid empty strings or non-positive integers are rejected at execution time rather than at MCP discovery/schema time.
+- `drone_ping` is available as a minimal no-input diagnostic tool to verify that a client can discover and invoke tools correctly.
+
 ## Real-time CI Tracking
 To enable webhook-driven state cache:
 
@@ -90,6 +95,7 @@ Optional fallback polling:
 
 ## MCP Tools
 Read tools:
+- `drone_ping`: minimal diagnostic tool returning `{ ok: true, server: "mcp-drone-ci" }`
 - `drone_list_repos`: list repositories visible to the Drone token
 - `drone_list_builds`: list build summaries for a repository
 - `drone_get_build`: fetch full details for one build
@@ -108,6 +114,10 @@ Build filters supported by `drone_list_builds`:
 - optional `sourceBranch`
 - optional `targetBranch`
 - optional `page` and `limit`
+
+Numeric inputs:
+- build identifiers and pagination values are exposed as generic MCP numbers for broad client compatibility
+- integer, positivity, and max-value checks are enforced by the server when the tool is executed
 
 Example:
 
