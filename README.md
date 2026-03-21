@@ -29,10 +29,11 @@ See [docs/implementation-plan.md](docs/implementation-plan.md).
 ```bash
 npm install
 ```
-2. Configure environment variables:
+2. Review the required environment variables:
 ```bash
 cp .env.example .env
 ```
+Then export the values in your shell or pass them explicitly in your MCP client configuration. This project does not load `.env` automatically.
 3. Build:
 ```bash
 npm run build
@@ -63,6 +64,7 @@ Example MCP config:
       "args": ["G:\\projets\\mcp-drone-ci\\dist\\index.js"],
       "env": {
         "DRONE_BASE_URL": "https://drone.example.com",
+        "DRONE_TOKEN": "replace-with-drone-token",
         "MCP_ENABLE_WRITE_ACTIONS": "false",
         "MCP_WEBHOOK_PORT": "0",
         "MCP_RECONCILE_INTERVAL_MS": "5000"
@@ -72,8 +74,9 @@ Example MCP config:
 }
 ```
 
-Windows/JetBrains note:
-- set `DRONE_TOKEN` as a Windows environment variable (`User` or `Machine` scope),
+Windows/JetBrains/Codex note:
+- do not rely on custom parent environment variables such as `DRONE_BASE_URL` or `DRONE_TOKEN` being inherited automatically by a local stdio MCP process,
+- many MCP stdio launchers only forward a safe subset of environment variables, so `DRONE_*` values must usually be set explicitly in the server `env` block,
 - do not set `DRONE_TOKEN` to a placeholder like `"${DRONE_TOKEN}"` in MCP `env` if your client does not expand placeholders; otherwise the literal string is sent and Drone authentication fails (`401`).
 
 Client compatibility note:
