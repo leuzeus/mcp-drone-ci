@@ -29,10 +29,11 @@ See [docs/implementation-plan.md](docs/implementation-plan.md).
 ```bash
 npm install
 ```
-2. Configure environment variables:
+2. Review the required environment variables:
 ```bash
 cp .env.example .env
 ```
+Then export the values in your shell or pass them explicitly in your MCP client configuration. This project does not load `.env` automatically.
 3. Build:
 ```bash
 npm run build
@@ -63,6 +64,7 @@ Example MCP config:
       "args": ["G:\\projets\\mcp-drone-ci\\dist\\index.js"],
       "env": {
         "DRONE_BASE_URL": "https://drone.example.com",
+        "DRONE_TOKEN": "replace-with-drone-token",
         "MCP_ENABLE_WRITE_ACTIONS": "false",
         "MCP_WEBHOOK_PORT": "0",
         "MCP_RECONCILE_INTERVAL_MS": "5000"
@@ -72,9 +74,15 @@ Example MCP config:
 }
 ```
 
-Windows/JetBrains note:
-- set `DRONE_TOKEN` as a Windows environment variable (`User` or `Machine` scope),
+Windows/JetBrains/Codex note:
+- do not rely on custom parent environment variables such as `DRONE_BASE_URL` or `DRONE_TOKEN` being inherited automatically by a local stdio MCP process,
+- many MCP stdio launchers only forward a safe subset of environment variables, so `DRONE_*` values must usually be set explicitly in the server `env` block,
 - do not set `DRONE_TOKEN` to a placeholder like `"${DRONE_TOKEN}"` in MCP `env` if your client does not expand placeholders; otherwise the literal string is sent and Drone authentication fails (`401`).
+
+Client compatibility note:
+- MCP tool `inputSchema` values are intentionally kept permissive to improve compatibility with clients such as JetBrains and Codex.
+- Strict business validation still happens in the tool handlers, so invalid empty strings or non-positive integers are rejected at execution time rather than at MCP discovery/schema time.
+- `drone_ping` is available as a minimal no-input diagnostic tool to verify that a client can discover and invoke tools correctly.
 
 ## Real-time CI Tracking
 To enable webhook-driven state cache:
@@ -88,12 +96,81 @@ To enable webhook-driven state cache:
 Optional fallback polling:
 - set `MCP_RECONCILE_INTERVAL_MS` (for example `5000`) to periodically refresh active builds from Drone API.
 
+## MCP Tools
+Read tools:
+- `drone_ping`: minimal diagnostic tool returning `{ ok: true, server: "mcp-drone-ci" }`
+- `drone_list_repos`: list repositories visible to the Drone token
+- `drone_list_builds`: list build summaries for a repository
+- `drone_get_build`: fetch full details for one build
+- `drone_get_build_logs`: fetch one stage/step log stream, with optional truncation
+- `drone_get_cached_build_state`: inspect webhook-cached build state
+
+Action tools (only when `MCP_ENABLE_WRITE_ACTIONS=true`):
+- `drone_restart_build`
+- `drone_stop_build`
+- `drone_approve_build`
+- `drone_decline_build`
+
+Build filters supported by `drone_list_builds`:
+- `owner` and `repo` are always required
+- optional `prNumber`
+- optional `sourceBranch`
+- optional `targetBranch`
+- optional `page` and `limit`
+
+Numeric inputs:
+- build identifiers and pagination values are exposed as generic MCP numbers for broad client compatibility
+- integer, positivity, and max-value checks are enforced by the server when the tool is executed
+- filtered `drone_list_builds` searches report when the repository scan limit is hit, instead of silently returning a false negative
+
+Example:
+
+```json
+{
+  "name": "drone_list_builds",
+  "arguments": {
+    "owner": "leuzeus",
+    "repo": "gowire",
+    "prNumber": 510,
+    "sourceBranch": "S076-gcmp-v2-planning",
+    "targetBranch": "dev",
+    "limit": 5
+  }
+}
+```
+
+## Token Efficiency
+This MCP is designed so agents can stay efficient if they use the tools in the intended order:
+
+1. Use `drone_list_builds` to search.
+2. Use `drone_get_build` only for the specific build you want to inspect in detail.
+3. Use `drone_get_build_logs` with `limitChars` when you need failure evidence.
+
+Important behavior:
+- `drone_list_builds` returns compact build summaries, not full build payloads
+- the full build `message` and other verbose fields are reserved for `drone_get_build`
+- MCP JSON responses are serialized compactly to reduce token overhead
+
+Recommended agent patterns:
+- prefer `owner/repo + prNumber` for PR-centric queries
+- otherwise use `owner/repo + sourceBranch + targetBranch`
+- keep `limit` small whenever possible
+- avoid `drone_list_repos` unless cross-repository discovery is explicitly needed
+- avoid broad `drone_list_builds` calls without filters on large repositories
+
+Recommended order of precision:
+1. `owner/repo + buildNumber`
+2. `owner/repo + prNumber`
+3. `owner/repo + sourceBranch + targetBranch`
+4. `owner/repo + targetBranch`
+
 ## Environment Variables
 Required:
 - `DRONE_BASE_URL`: Drone base URL (for example `https://drone.example.com`)
 - `DRONE_TOKEN`: Drone API token
 
 Optional:
+- `DRONE_ALLOW_INSECURE_HTTP` (default `false`, only set `true` for trusted internal Drone deployments without TLS)
 - `DRONE_TIMEOUT_MS` (default `10000`)
 - `DRONE_MAX_RETRIES` (default `2`)
 - `MCP_ENABLE_WRITE_ACTIONS` (default `false`)

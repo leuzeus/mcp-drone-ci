@@ -19,8 +19,10 @@ export interface DroneBuild {
   owner: string;
   repo: string;
   number: number;
+  prNumber?: number;
   status: DroneBuildStatus;
   event: string;
+  sourceBranch?: string;
   target?: string;
   message?: string;
   author?: string;

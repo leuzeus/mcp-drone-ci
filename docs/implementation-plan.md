@@ -10,7 +10,7 @@ Build an MCP server that exposes Drone CI data and allows an agent (for example,
 Included:
 - MCP read tools:
   - `drone_list_repos`
-  - `drone_list_builds`
+  - `drone_list_builds` with optional `prNumber`, `sourceBranch`, `targetBranch`
   - `drone_get_build`
   - `drone_get_build_logs`
 - MCP context resources:
@@ -71,7 +71,8 @@ Definition of done:
 
 Definition of done:
 - an agent can diagnose a failing build without manual Drone UI checks,
-- outputs are stable (versioned schemas).
+- outputs are stable (versioned schemas),
+- list/search operations stay compact enough for routine agent use.
 
 ## Epic C - Webhooks + State Cache
 1. HTTP webhook receiver.
@@ -128,6 +129,8 @@ Week 3:
 ## 7. Risks and Mitigations
 - Large log volume:
   - mitigation: pagination + limit + `truncated` flag.
+- Overly verbose MCP payloads:
+  - mitigation: compact JSON serialization and summary-first list endpoints.
 - Overly broad token permissions:
   - mitigation: read-only token for MVP, separate write token.
 - Webhook desynchronization:
@@ -140,6 +143,7 @@ Week 3:
 2. On failure, an agent can provide a log-based diagnosis and propose an action.
 3. The system supports webhook-first with polling fallback without API overload.
 4. Write actions remain disabled until security validation is complete.
+5. Agents can scope build discovery by repository, PR number, and branch filters without broad repository scans.
 
 ## 9. Public Repository Readiness
 1. Secrets are provided only via environment variables (`DRONE_TOKEN`, `DRONE_WEBHOOK_SECRET`).

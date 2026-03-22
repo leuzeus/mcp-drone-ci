@@ -1,0 +1,286 @@
+import { createServer, IncomingMessage, Server, ServerResponse } from "node:http";
+import { BuildStateStore } from "../state/build-state-store";
+import { DroneBuild, DroneBuildStatus } from "../types/drone";
+import { DroneWebhookPayload, WebhookReceiver } from "./receiver";
+
+const DEFAULT_MAX_BODY_SIZE_BYTES = 1_000_000;
+
+export interface WebhookHttpServerConfig {
+  port: number;
+  host?: string;
+  path: string;
+  maxBodySizeBytes?: number;
+}
+
+interface StartWebhookServerArgs {
+  config: WebhookHttpServerConfig;
+  receiver: WebhookReceiver;
+  buildStateStore: BuildStateStore;
+}
+
+function readSignatureHeader(req: IncomingMessage): string | undefined {
+  const droneSignature = req.headers["x-drone-signature"];
+  if (typeof droneSignature === "string") {
+    return droneSignature;
+  }
+
+  const hubSignature = req.headers["x-hub-signature-256"];
+  if (typeof hubSignature === "string") {
+    return hubSignature;
+  }
+
+  return undefined;
+}
+
+function readEventHeader(req: IncomingMessage): string | undefined {
+  const droneEvent = req.headers["x-drone-event"];
+  if (typeof droneEvent === "string") {
+    return droneEvent;
+  }
+
+  return undefined;
+}
+
+function writeJson(res: ServerResponse, statusCode: number, body: Record<string, unknown>): void {
+  res.statusCode = statusCode;
+  res.setHeader("content-type", "application/json; charset=utf-8");
+  res.end(JSON.stringify(body));
+}
+
+class HttpResponseError extends Error {
+  constructor(
+    public readonly statusCode: number,
+    public readonly publicMessage: string
+  ) {
+    super(publicMessage);
+    this.name = "HttpResponseError";
+  }
+}
+
+function matchesWebhookPath(req: IncomingMessage, expectedPath: string): boolean {
+  const requestUrl = new URL(req.url ?? "/", "http://localhost");
+  return requestUrl.pathname === expectedPath;
+}
+
+function ensureJsonContentType(req: IncomingMessage): void {
+  const contentType = req.headers["content-type"];
+  const value = Array.isArray(contentType) ? contentType[0] : contentType;
+  if (!value) {
+    throw new HttpResponseError(415, "Content-Type must be application/json");
+  }
+
+  const normalized = value.split(";")[0]?.trim().toLowerCase();
+  if (normalized !== "application/json") {
+    throw new HttpResponseError(415, "Content-Type must be application/json");
+  }
+}
+
+async function readBody(req: IncomingMessage, maxBodySizeBytes: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let total = 0;
+    const chunks: Buffer[] = [];
+    let settled = false;
+
+    const rejectOnce = (error: Error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(error);
+    };
+
+    const resolveOnce = (body: string) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(body);
+    };
+
+    req.on("data", (chunk: Buffer) => {
+      if (settled) {
+        return;
+      }
+
+      total += chunk.length;
+      if (total > maxBodySizeBytes) {
+        req.resume();
+        rejectOnce(new HttpResponseError(413, "Webhook payload exceeds maximum body size."));
+        return;
+      }
+
+      chunks.push(chunk);
+    });
+
+    req.on("end", () => {
+      resolveOnce(Buffer.concat(chunks).toString("utf8"));
+    });
+
+    req.on("error", rejectOnce);
+  });
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function asDroneBuildStatus(value: unknown): DroneBuildStatus | undefined {
+  const allowed: DroneBuildStatus[] = [
+    "pending",
+    "running",
+    "success",
+    "failure",
+    "error",
+    "killed",
+    "blocked",
+  ];
+
+  return typeof value === "string" && allowed.includes(value as DroneBuildStatus)
+    ? (value as DroneBuildStatus)
+    : undefined;
+}
+
+function buildFromPayload(
+  payload: DroneWebhookPayload,
+  owner: string,
+  repo: string
+): DroneBuild | undefined {
+  if (!payload.build) {
+    return undefined;
+  }
+
+  const buildPayload = payload.build;
+  const number = asNumber(buildPayload.number);
+  const status = asDroneBuildStatus(buildPayload.status);
+  const created = asNumber(buildPayload.created);
+  const event = asString(buildPayload.event) ?? "webhook";
+
+  if (number === undefined || status === undefined || created === undefined) {
+    return undefined;
+  }
+
+  return {
+    owner,
+    repo,
+    number,
+    prNumber: asNumber(buildPayload.pull) ?? parsePrNumber(payload, buildPayload),
+    status,
+    event,
+    sourceBranch: asString(buildPayload.source),
+    target: asString(buildPayload.target),
+    message: asString(buildPayload.message),
+    author:
+      asString(buildPayload.author_login) ??
+      asString(buildPayload.author_name) ??
+      asString(buildPayload.author),
+    createdAtUnix: created,
+    startedAtUnix: asNumber(buildPayload.started),
+    finishedAtUnix: asNumber(buildPayload.finished),
+  };
+}
+
+function parsePrNumber(
+  payload: DroneWebhookPayload,
+  buildPayload: Record<string, unknown>
+): number | undefined {
+  const ref = asString(buildPayload.ref) ?? asString(payload.ref);
+  const refMatch = ref?.match(/^refs\/pull\/(\d+)\/head$/);
+  if (refMatch) {
+    return Number(refMatch[1]);
+  }
+
+  const link = asString(buildPayload.link) ?? asString(payload.link);
+  const linkMatch = link?.match(/\/pull\/(\d+)(?:$|[/?#])/);
+  if (linkMatch) {
+    return Number(linkMatch[1]);
+  }
+
+  return undefined;
+}
+
+export async function startDroneWebhookHttpServer({
+  config,
+  receiver,
+  buildStateStore,
+}: StartWebhookServerArgs): Promise<Server> {
+  const maxBodySizeBytes = config.maxBodySizeBytes ?? DEFAULT_MAX_BODY_SIZE_BYTES;
+
+  const server = createServer(async (req, res) => {
+    if (req.method !== "POST" || !matchesWebhookPath(req, config.path)) {
+      writeJson(res, 404, { error: "Not found" });
+      return;
+    }
+
+    try {
+      ensureJsonContentType(req);
+      const rawBody = await readBody(req, maxBodySizeBytes);
+      const signature = readSignatureHeader(req);
+
+      if (!receiver.verifySignature(rawBody, signature)) {
+        writeJson(res, 401, { error: "Invalid webhook signature" });
+        return;
+      }
+
+      let payload: DroneWebhookPayload;
+      try {
+        payload = JSON.parse(rawBody) as DroneWebhookPayload;
+      } catch {
+        writeJson(res, 400, { error: "Invalid JSON payload" });
+        return;
+      }
+
+      const parsed = receiver.parseEvent(
+        {
+          event: readEventHeader(req),
+          signature,
+        },
+        payload
+      );
+
+      if (
+        parsed.type === "build" &&
+        parsed.owner &&
+        parsed.repo &&
+        parsed.buildNumber &&
+        parsed.status
+      ) {
+        const build = buildFromPayload(payload, parsed.owner, parsed.repo);
+        buildStateStore.upsert({
+          owner: parsed.owner,
+          repo: parsed.repo,
+          buildNumber: parsed.buildNumber,
+          status: parsed.status,
+          updatedAtUnix: Math.floor(Date.now() / 1000),
+          build,
+        });
+      }
+
+      writeJson(res, 202, {
+        accepted: true,
+        type: parsed.type,
+        action: parsed.action,
+      });
+    } catch (error) {
+      if (error instanceof HttpResponseError) {
+        writeJson(res, error.statusCode, { error: error.publicMessage });
+        return;
+      }
+
+      writeJson(res, 500, { error: "Internal server error" });
+    }
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(config.port, config.host ?? "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+
+  return server;
+}
